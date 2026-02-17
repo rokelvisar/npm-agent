@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # Nginx Proxy Manager
+  # This is the reverse proxy that will be configured by the agent.
+  npm:
+    image: 'jc21/nginx-proxy-manager:latest'
+    container_name: npm
+    restart: unless-stopped
+    ports:
+      - '80:80'   # HTTP traffic
+      - '443:443' # HTTPS traffic
+      - '81:81'   # Admin UI
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+
+  # NPM Docker Agent
+  # This service monitors other containers and talks to the NPM API.
+  npm-agent:
+    image: ghcr.io/rokelvisar/npm-agent:main
+    container_name: npm-agent
+    restart: unless-stopped
+    depends_on:
+      - npm
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - NPM_API_BASE_URL=http://npm:81
+      - NPM_API_USER=admin@example.com      # Replace with your NPM login
+      - NPM_API_PASSWORD=changeme           # Replace with your NPM password
+      - NPM_DEFAULT_LE_EMAIL=admin@example.com # Email for Let's Encrypt
+      - NPM_DEFAULT_FORWARD_HOST=npm        # Optional: Force forward to specific host/IP
+
+  # Example Application
+  # Adding the labels below will trigger the agent to create a proxy host in NPM.
+  whoami:
+    image: traefik/whoami
+    container_name: whoami
+    labels:
+      - "npm.proxy.host=whoami.example.com"
+      - "npm.proxy.port=80"
+      - "npm.proxy.ssl=true"

@@ -57,13 +57,30 @@ To expose a container, add the following labels:
 
 ## Deployment
 
-### Docker Compose
+### Full Stack Example (NPM + Agent + App)
+
+This example shows how to run Nginx Proxy Manager along with the Agent and a proxied application.
 
 ```yaml
 services:
+  # Nginx Proxy Manager
+  npm:
+    image: 'jc21/nginx-proxy-manager:latest'
+    container_name: npm
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '81:81'
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+
+  # NPM Docker Agent
   npm-agent:
     image: ghcr.io/rokelvisar/npm-agent:main
     container_name: npm-agent
+    restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
@@ -71,7 +88,15 @@ services:
       - NPM_API_USER=admin@example.com
       - NPM_API_PASSWORD=changeme
       - NPM_DEFAULT_LE_EMAIL=admin@example.com
-    restart: unless-stopped
+
+  # Example Application (Automatically Proxied)
+  whoami:
+    image: traefik/whoami
+    container_name: whoami
+    labels:
+      - "npm.proxy.host=whoami.example.com"
+      - "npm.proxy.port=80"
+      - "npm.proxy.ssl=true"
 ```
 
 ## Security
