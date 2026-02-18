@@ -248,41 +248,325 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _generate_html(self, hosts):
-        # Professional UI simplified
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        total = len(hosts)
+        active = sum(1 for h in hosts if h.get("enabled"))
+        ssl_count = sum(1 for h in hosts if h.get("ssl_forced") and h.get("certificate_id") and h.get("certificate_id") != 0)
+
         rows = ""
         for h in hosts:
-            domains = ", ".join(h.get("domain_names", []))
-            upstream = f"{h.get('forward_host')}:{h.get('forward_port')}"
-            ssl = "✅" if h.get("ssl_forced") else "❌"
-            status = "🟢 Active" if h.get("enabled") else "🔴 Disabled"
-            rows += f"<tr><td>{domains}</td><td>{upstream}</td><td>{ssl}</td><td>{status}</td></tr>"
+            domains_list = h.get("domain_names", [])
+            primary = domains_list[0] if domains_list else "—"
+            extra = f' <span class="badge-extra">+{len(domains_list)-1} more</span>' if len(domains_list) > 1 else ""
+            upstream = f"{h.get('forward_scheme', 'http')}://{h.get('forward_host')}:{h.get('forward_port')}"
+            ssl_badge = '<span class="badge badge-ssl">SSL</span>' if (h.get("ssl_forced") and h.get("certificate_id") and h.get("certificate_id") != 0) else '<span class="badge badge-nossl">No SSL</span>'
+            status_badge = '<span class="badge badge-active">Active</span>' if h.get("enabled") else '<span class="badge badge-disabled">Disabled</span>'
+            cert_id = h.get("certificate_id", 0)
+            cert_info = f'Cert #{cert_id}' if cert_id and cert_id != 0 else "—"
+            rows += f"""
+            <tr>
+                <td><span class="domain-primary">{primary}</span>{extra}</td>
+                <td><code class="upstream">{upstream}</code></td>
+                <td>{ssl_badge}</td>
+                <td>{cert_info}</td>
+                <td>{status_badge}</td>
+            </tr>"""
 
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>NPM Docker Agent</title>
-            <style>
-                body {{ font-family: sans-serif; padding: 40px; background: #f4f7f6; }}
-                .card {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-                th, td {{ text-align: left; padding: 12px; border-bottom: 1px solid #eee; }}
-                th {{ background: #fafafa; }}
-                h1 {{ margin-top: 0; color: #333; }}
-            </style>
-        </head>
-        <body>
-            <div class="card">
+        empty_row = '<tr><td colspan="5" class="empty-row">No managed proxy hosts found.</td></tr>'
+
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NPM Docker Agent</title>
+    <style>
+        *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+        :root {{
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface2: #22263a;
+            --border: #2e3350;
+            --accent: #4f8ef7;
+            --accent2: #7c5cfc;
+            --green: #22c55e;
+            --red: #ef4444;
+            --yellow: #f59e0b;
+            --text: #e2e8f0;
+            --muted: #64748b;
+            --radius: 12px;
+        }}
+
+        body {{
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 32px 24px;
+        }}
+
+        .header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 32px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }}
+
+        .header-left {{
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }}
+
+        .logo {{
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            flex-shrink: 0;
+        }}
+
+        .header-title h1 {{
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: var(--text);
+            letter-spacing: -0.3px;
+        }}
+
+        .header-title p {{
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin-top: 2px;
+        }}
+
+        .refresh-btn {{
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: background 0.2s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }}
+
+        .refresh-btn:hover {{ background: var(--border); }}
+
+        .stats {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 16px;
+            margin-bottom: 28px;
+        }}
+
+        .stat-card {{
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }}
+
+        .stat-label {{
+            font-size: 0.75rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+
+        .stat-value {{
+            font-size: 2rem;
+            font-weight: 700;
+            line-height: 1;
+        }}
+
+        .stat-value.blue {{ color: var(--accent); }}
+        .stat-value.green {{ color: var(--green); }}
+        .stat-value.purple {{ color: var(--accent2); }}
+
+        .table-card {{
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }}
+
+        .table-header {{
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }}
+
+        .table-header h2 {{
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text);
+        }}
+
+        .table-header span {{
+            font-size: 0.8rem;
+            color: var(--muted);
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+        }}
+
+        thead th {{
+            padding: 11px 20px;
+            text-align: left;
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: var(--surface2);
+            border-bottom: 1px solid var(--border);
+        }}
+
+        tbody tr {{
+            border-bottom: 1px solid var(--border);
+            transition: background 0.15s;
+        }}
+
+        tbody tr:last-child {{ border-bottom: none; }}
+        tbody tr:hover {{ background: var(--surface2); }}
+
+        td {{
+            padding: 14px 20px;
+            font-size: 0.875rem;
+            vertical-align: middle;
+        }}
+
+        .domain-primary {{
+            font-weight: 500;
+            color: var(--text);
+        }}
+
+        .badge-extra {{
+            font-size: 0.7rem;
+            color: var(--muted);
+            margin-left: 6px;
+        }}
+
+        code.upstream {{
+            font-family: 'Fira Code', 'Cascadia Code', monospace;
+            font-size: 0.8rem;
+            color: var(--accent);
+            background: rgba(79, 142, 247, 0.1);
+            padding: 3px 8px;
+            border-radius: 5px;
+        }}
+
+        .badge {{
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }}
+
+        .badge-ssl {{ background: rgba(34,197,94,0.15); color: var(--green); }}
+        .badge-nossl {{ background: rgba(239,68,68,0.12); color: var(--red); }}
+        .badge-active {{ background: rgba(34,197,94,0.15); color: var(--green); }}
+        .badge-disabled {{ background: rgba(239,68,68,0.12); color: var(--red); }}
+
+        .empty-row {{
+            text-align: center;
+            color: var(--muted);
+            padding: 48px 20px !important;
+            font-size: 0.9rem;
+        }}
+
+        .footer {{
+            margin-top: 24px;
+            text-align: center;
+            font-size: 0.75rem;
+            color: var(--muted);
+        }}
+
+        .footer a {{
+            color: var(--accent);
+            text-decoration: none;
+        }}
+
+        @media (max-width: 600px) {{
+            body {{ padding: 16px 12px; }}
+            td, thead th {{ padding: 10px 12px; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <div class="logo">🔀</div>
+            <div class="header-title">
                 <h1>NPM Docker Agent</h1>
-                <p>Monitoring Docker events and synchronizing with Nginx Proxy Manager.</p>
-                <table>
-                    <thead><tr><th>Domains</th><th>Upstream</th><th>SSL</th><th>Status</th></tr></thead>
-                    <tbody>{rows if rows else '<tr><td colspan="4">No managed hosts found.</td></tr>'}</tbody>
-                </table>
+                <p>Nginx Proxy Manager · Auto-sync</p>
             </div>
-        </body>
-        </html>
-        """
+        </div>
+        <a href="/" class="refresh-btn">↻ Refresh</a>
+    </div>
+
+    <div class="stats">
+        <div class="stat-card">
+            <span class="stat-label">Managed Hosts</span>
+            <span class="stat-value blue">{total}</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Active</span>
+            <span class="stat-value green">{active}</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">SSL Enabled</span>
+            <span class="stat-value purple">{ssl_count}</span>
+        </div>
+    </div>
+
+    <div class="table-card">
+        <div class="table-header">
+            <h2>Proxy Hosts</h2>
+            <span>Last updated: {now}</span>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Domain</th>
+                    <th>Upstream</th>
+                    <th>SSL</th>
+                    <th>Certificate</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows if rows else empty_row}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="footer">
+        <a href="https://github.com/rokreativa/npm-agent" target="_blank">npm-docker-agent</a>
+        &nbsp;·&nbsp; Monitoring Docker events &amp; syncing with Nginx Proxy Manager
+    </div>
+</body>
+</html>"""
 
 def start_dashboard():
     server_address = ('', 8080)
