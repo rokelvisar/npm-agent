@@ -24,6 +24,7 @@ NPM_API_USER = os.getenv("NPM_API_USER")
 NPM_API_PASSWORD = os.getenv("NPM_API_PASSWORD")
 NPM_DEFAULT_LE_EMAIL = os.getenv("NPM_DEFAULT_LE_EMAIL", "")
 NPM_DEFAULT_FORWARD_HOST = os.getenv("NPM_DEFAULT_FORWARD_HOST")
+DOCKER_HOST = os.getenv("DOCKER_HOST")
 
 # Validate Required Configuration
 if not all([NPM_API_BASE_URL, NPM_API_USER, NPM_API_PASSWORD]):
@@ -91,7 +92,7 @@ class NPMSession:
             return None
 
 # Global Clients
-docker_client = docker.from_env()
+docker_client = docker.DockerClient(base_url=DOCKER_HOST) if DOCKER_HOST else docker.from_env()
 npm_session = NPMSession()
 
 def get_existing_proxy_hosts():
