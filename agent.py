@@ -150,34 +150,68 @@ def sync_container_state(container):
     domains = [d.strip() for d in domain_label.split(",") if d.strip()]
     primary_domain = domains[0]
     
-    internal_port = labels.get("npm.proxy.port", "80")
+    labeled_port = labels.get("npm.proxy.port", "80")
     scheme = labels.get("npm.proxy.scheme", "http")
     ssl = labels.get("npm.proxy.ssl", "true").lower() == "true"
-    
-    # Forward host logic: label -> env default -> container network IP (fallback)
-    forward_host = labels.get("npm.proxy.forward_host", NPM_DEFAULT_FORWARD_HOST)
-    
-    # If no forward host provided, try to detect it from the container's network
+
+    # Forward host logic: label -> env default -> auto-detect
+    explicit_forward_host = labels.get("npm.proxy.forward_host", NPM_DEFAULT_FORWARD_HOST)
+    forward_host = explicit_forward_host
+
+    # Resolve port and host from Docker's port mapping table.
+    # The label port may be either the container-internal port OR the host-mapped port.
+    # We inspect all mappings to handle both cases correctly.
+    ports_config = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+    networks = container.attrs.get('NetworkSettings', {}).get('Networks', {})
+
+    final_port = labeled_port
+    host_port_mapped = False
+    gateway = None
+
+    if networks:
+        first_net = list(networks.values())[0]
+        gateway = first_net.get('Gateway')
+
+    if ports_config:
+        # Case 1: labeled port is the container-internal port (e.g. npm.proxy.port=80)
+        port_key = f"{labeled_port}/tcp"
+        if port_key in ports_config:
+            mappings = ports_config[port_key]
+            if mappings and mappings[0].get('HostPort'):
+                host_port = mappings[0]['HostPort']
+                final_port = host_port
+                host_port_mapped = True
+                logger.info(f"Port label is container port for {container.name}: {labeled_port} -> host:{host_port}")
+        else:
+            # Case 2: labeled port is the host-mapped port (e.g. npm.proxy.port=8089)
+            # Search all mappings for a matching host port
+            for container_port_key, mappings in ports_config.items():
+                if not mappings:
+                    continue
+                for mapping in mappings:
+                    if mapping.get('HostPort') == labeled_port:
+                        final_port = labeled_port  # use the host port as-is
+                        host_port_mapped = True
+                        logger.info(f"Port label is host port for {container.name}: host:{labeled_port} <- container:{container_port_key}")
+                        break
+                if host_port_mapped:
+                    break
+
+    # If no explicit forward host provided, auto-detect based on port mapping
     if not forward_host:
-        networks = container.attrs.get('NetworkSettings', {}).get('Networks', {})
-        if networks:
-            # Pick the first available network IP
-            first_net = list(networks.values())[0]
-            forward_host = first_net.get('IPAddress')
+        if host_port_mapped and gateway:
+            # Service is exposed on the Docker host — use the host's gateway IP
+            forward_host = gateway
+            logger.info(f"Using host gateway IP for {container.name}: {forward_host}:{final_port}")
+        else:
+            # No host port mapping — use the container's internal network IP directly
+            if networks:
+                first_net = list(networks.values())[0]
+                forward_host = first_net.get('IPAddress')
 
     if not forward_host:
         logger.error(f"Could not determine forward host for {container.name}. Specify 'npm.proxy.forward_host' label or NPM_DEFAULT_FORWARD_HOST env.")
         return
-
-    # Dynamic Host Port Detection
-    final_port = internal_port
-    port_key = f"{internal_port}/tcp"
-    ports_config = container.attrs.get('NetworkSettings', {}).get('Ports', {})
-    if ports_config and port_key in ports_config:
-        mappings = ports_config[port_key]
-        if mappings and mappings[0].get('HostPort'):
-            final_port = mappings[0]['HostPort']
-            logger.info(f"Detected host port mapping for {container.name}: {internal_port} -> {final_port}")
     
     logger.info(f"Syncing {container.name} labels ({primary_domain})...")
     
@@ -621,7 +655,9 @@ def main():
             except Exception as e:
                 logger.error(f"Failed to process start event for {name}: {e}")
 
-        elif action in ["die", "destroy", "stop"]:
+        elif action == "die":
+            # Only clean up on "die" — Docker also fires "stop" and "destroy"
+            # for the same container removal, which would cause duplicate cleanups.
             if "npm.proxy.host" in attributes:
                 cleanup_container_proxy(name, attributes)
 
