@@ -14,8 +14,8 @@ WORKDIR /app
 # We use a non-root user for better security
 # Note: If using a local unix socket, the user 'agent' needs permission to read/write it.
 # Often this means adding the user to the 'docker' group (GID 999 or similar).
-RUN addgroup -g 999 docker && \
-    addgroup -S agent && adduser -S agent -G agent && \
+RUN addgroup -S agent && adduser -S agent -G agent && \
+    (addgroup -g 999 docker || addgroup docker) && \
     addgroup agent docker && \
     pip install --no-cache-dir docker requests
 
